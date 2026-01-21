@@ -10,37 +10,28 @@ require('dotenv').config();
 const app = express();
 
 // --- SMART URL SETUP ---
-// Agar process.env.BASE_URL set hai to wo use karo, warna localhost
 const BASE_URL = process.env.BASE_URL || 'http://localhost:5000';
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+// IMPORTANT: Limit barhai hai taake bari images crash na karein
+app.use(express.json({ limit: '50mb' })); 
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
-// --- IMAGE UPLOAD SETUP ---
-const uploadDir = 'uploads';
-if (!fs.existsSync(uploadDir)){
-    fs.mkdirSync(uploadDir);
-}
-
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    cb(null, 'uploads/') 
-  },
-  filename: function (req, file, cb) {
-    cb(null, Date.now() + '-' + file.originalname) 
-  }
-});
-
+// --- IMAGE UPLOAD SETUP (CHANGED TO MEMORY) ---
+// Ab hum 'diskStorage' use nahi karenge, balkay 'memoryStorage' use karenge
+// Taake image RAM mein aaye aur hum usay Base64 bana sakein.
+const storage = multer.memoryStorage();
 const upload = multer({ storage: storage });
 
+// (Ab 'uploads' folder aur static route ki zaroorat nahi hai, lekin purani images ke liye rehne diya)
 app.use('/uploads', express.static('uploads'));
 
 // --- ROUTES ---
 
 // 1. Test Route
 app.get('/', (req, res) => {
-    res.send("Backend is Running!");
+    res.send("Backend is Running with Base64 Storage!");
 });
 
 // 2. GET ALL PRODUCTS
@@ -65,13 +56,19 @@ app.get('/categories', async (req, res) => {
     }
 });
 
-// 4. ADD CATEGORY
+// 4. ADD CATEGORY (Updated for Base64)
 app.post('/categories', upload.single('image'), async (req, res) => {
   try {
     const { name, discount_percent } = req.body;
-    // CHANGE: Localhost ki jagah BASE_URL use kiya
-    const image_url = req.file ? `${BASE_URL}/uploads/${req.file.filename}` : null;
     
+    let image_url = null;
+
+    // Logic: Agar file hai to Base64 banao
+    if (req.file) {
+        const b64 = Buffer.from(req.file.buffer).toString('base64');
+        image_url = `data:${req.file.mimetype};base64,${b64}`;
+    }
+
     const newCat = await pool.query(
       "INSERT INTO categories (name, discount_percent, image_url) VALUES ($1, $2, $3) RETURNING *",
       [name, discount_percent || 0, image_url]
@@ -83,12 +80,22 @@ app.post('/categories', upload.single('image'), async (req, res) => {
   }
 });
 
-// 5. ADD PRODUCT (Merged & Fixed)
+// 5. ADD PRODUCT (Updated for Base64 & Text URL)
 app.post('/products', upload.single('image'), async (req, res) => {
   try {
-    const { title, price, original_price, discount_tag, category_id, stock_quantity, description } = req.body;
-    // CHANGE: Localhost ki jagah BASE_URL use kiya
-    const image_url = req.file ? `${BASE_URL}/uploads/${req.file.filename}` : null;
+    const { title, price, original_price, discount_tag, category_id, stock_quantity, description, image_url: textUrl } = req.body;
+    
+    let final_image_url = null;
+
+    // Logic: 
+    // 1. Agar file upload hui hai -> Base64 banao
+    // 2. Agar file nahi hai aur text link diya hai -> Wo use karo
+    if (req.file) {
+        const b64 = Buffer.from(req.file.buffer).toString('base64');
+        final_image_url = `data:${req.file.mimetype};base64,${b64}`;
+    } else if (textUrl) {
+        final_image_url = textUrl;
+    }
 
     const newProduct = await pool.query(
       `INSERT INTO products (title, price, original_price, discount_tag, image_url, category_id, stock_quantity, description) 
@@ -98,7 +105,7 @@ app.post('/products', upload.single('image'), async (req, res) => {
         price, 
         original_price || null, 
         discount_tag || null, 
-        image_url, 
+        final_image_url, 
         category_id ? parseInt(category_id) : null, 
         stock_quantity || 0,
         description || ""
@@ -147,14 +154,17 @@ app.get('/sliders', async (req, res) => {
     }
 });
 
-// ADD SLIDER
+// ADD SLIDER (Updated for Base64)
 app.post('/sliders', upload.single('image'), async (req, res) => {
   try {
-    if (!req.file) {
+    let image_url = null;
+
+    if (req.file) {
+        const b64 = Buffer.from(req.file.buffer).toString('base64');
+        image_url = `data:${req.file.mimetype};base64,${b64}`;
+    } else {
         return res.status(400).json({ msg: "Please upload an image" });
     }
-    // CHANGE: Localhost ki jagah BASE_URL use kiya
-    const image_url = `${BASE_URL}/uploads/${req.file.filename}`;
     
     const newSlide = await pool.query(
       "INSERT INTO sliders (image_url) VALUES ($1) RETURNING *",
